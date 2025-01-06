@@ -2,6 +2,7 @@ import argparse
 from datasets import load_dataset
 from tqdm import tqdm
 from tools.hash import ImageDeduplicator
+from tools.template import format_vanilla, format_reasoning_enhance_question, format_check_question
 from paddlemix.datacopilot.nn import llms
 
 
@@ -58,6 +59,47 @@ def noise_detection(dataset, noise_ratio):
     reasoning_enhance_model = llms.ErnieEval(model_name="ernie-4.0", access_token="")
     check_model = llms.ErnieEval(model_name="ernie-speed-128k", access_token="")
     
+    vanilla_eval = Eval(samples=dataset)
+    vanilla_eval.evaluate(vanilla_model, format_fn = format_vanilla)
+    vanilla_predict = vanilla_eval.get_results()
+    
+    """
+    Reasoning-enhanced inference
+    """
+    reasoning_eval = Eval(samples=dataset)
+    reasoning_eval.evaluate(reasoning_enhance_model, format_fn = format_reasoning_enhance_question)
+    reasoning_predict = reasoning_eval.get_results()
+    
+    """
+    Data Split
+    """
+    clean_samples = []
+    noisy_samples = []
+
+    data_packed = []
+    for i in range(len(vanilla_predict)):
+        data_ = dataset[i]
+        potential_answer = data_['answer']
+        vanilla_pred = vanilla_predict[i]['PredAnswer']
+        reasoning_pred = reasoning_predict[i]['PredAnswer']
+
+        data_['vanilla_prediction'] = vanilla_pred
+        data_['image'] = data_['image']
+        data_['reasoning_prediction'] = reasoning_pred
+        data_['potential_answer'] = potential_answer
+
+        template = format_check_question(data_)
+        out = check_model.predict(template)
+        
+        if "Y" in out:
+            data_['PseudoLabel'] = potential_answer
+            data_['clean_flag'] = 1
+            clean_samples.append(data_)
+        else:
+            data_['clean_flag'] = 0
+            noisy_samples.append(data_)
+    return clean_samples, noisy_samples
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='Noisy Free Fine-tuning')
     # parser.add_argument('--task', type=str, default='mmlu', help='Task name')
@@ -77,4 +119,5 @@ if __name__ == "__main__":
     dedu_dataset = deduplicate_dataset(dataset)
 
     # step2 : Noise detection
+    clean, noisy = noise_detection(dedu_dataset, args.noise_ratio)
     
